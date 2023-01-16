@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mindbox-test
+spec:
+  selector:
+    matchLabels:
+      app: mindbox-test
+  template:
+    metadata:
+      labels:
+        app: mindbox-test
+    spec:
+      affinity:
+        podAntiAffinity: # выполняем условие отказоустойчивости, чтобы поды не распределялись на одной ноде
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLables:
+              app: mindbox-test
+      containers:
+      - name: mindbox-test
+        image: mindbox-test:latest # плейсхолдер докер образа
+        resources:
+          requests: # запрашиваем ресурсы по условию, чтобы под распределился на подходящую ноду
+            memory: "128M"
+            cpu: "100m"
+          limits:
+            memory: "140M" # взял чуть больше, чтобы контейнер не валился в OOM при каждом чихе больше 128М
+            cpu: "500m" # условие не дает конкретных цифр по начальной нагрузке на CPU, поэтому беру с запасом, чтобы не троттлил
+        ports:
+        - containerPort: 80 # указываем для информации какой порт будет слушать наш контейнер
+          protocol: TCP # зададим явно для информативности, хоть по дефолту k8s подразумевает TCP для всех портов, где явно протокол не указывается 
+        startupProbe: # проверям что под с приложением завелся успешно, если нет - убиваем под
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 1
+          failureThreshold: 5
+       
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: mindbox-test-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mindbox-test
+  # изначально была идея взять 2 реплики, но возможна ситуация, что 2 пода будут на нодах в одной зоне => падение зоны = недоступность    
+  minReplicas: 3  
+  maxReplicas: 6 # изначально хотел взять 5, но выход из строя зоны (2 пода) нагрузит сильно оставшиеся 3 пода
+  metrics:
+  - type: Resource # решил не считать память, т.к. по условию в нагрузке она всегда держит ровно 128М => больше потребление = утечка памяти
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80
